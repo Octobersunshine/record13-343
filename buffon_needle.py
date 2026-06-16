@@ -1,10 +1,69 @@
 import argparse
 import json
+import math
 import time
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 from flask import Flask, request, jsonify
+
+MIN_RECOMMENDED_NEEDLES = 10000
+
+RELIABILITY_TIERS = [
+    (1000000, "excellent", "~0.1%"),
+    (100000, "good", "~0.3%"),
+    (10000, "fair", "~1%"),
+    (0, "unreliable", ">1%"),
+]
+
+
+def assess_reliability(num_needles: int) -> Dict:
+    warnings: List[str] = []
+    recommended = MIN_RECOMMENDED_NEEDLES
+
+    if num_needles < MIN_RECOMMENDED_NEEDLES:
+        warnings.append(
+            f"投针次数 ({num_needles:,}) 低于建议最低值 ({MIN_RECOMMENDED_NEEDLES:,})，"
+            f"结果可能严重偏离 π，建议至少投针 {MIN_RECOMMENDED_NEEDLES:,} 次"
+        )
+
+    if num_needles < 100:
+        warnings.append(
+            "投针次数极少，统计波动极大，π 估计值几乎无参考价值"
+        )
+
+    tier_name = "unreliable"
+    tier_accuracy = ">1%"
+    for threshold, name, accuracy in RELIABILITY_TIERS:
+        if num_needles >= threshold:
+            tier_name = name
+            tier_accuracy = accuracy
+            break
+
+    l_over_d = 1.0
+    p = (2.0 * l_over_d) / np.pi
+    if num_needles > 0 and p > 0:
+        se_rel = math.sqrt((1 - p) / (p * num_needles))
+        expected_error_pct = se_rel * 100
+    else:
+        expected_error_pct = float("inf")
+
+    if num_needles < 1000:
+        recommended = 10000
+    elif num_needles < 100000:
+        recommended = 100000
+    elif num_needles < 1000000:
+        recommended = 1000000
+    else:
+        recommended = num_needles
+
+    return {
+        "tier": tier_name,
+        "tier_accuracy": tier_accuracy,
+        "warnings": warnings,
+        "expected_relative_error_percent": round(expected_error_pct, 4),
+        "recommended_min_needles": recommended,
+    }
 
 
 def simulate_buffon_needle(
@@ -59,6 +118,8 @@ def compute_statistics(
     error_rel = error_abs / np.pi * 100
     theoretical_prob = (2.0 * needle_length) / (np.pi * line_spacing)
 
+    reliability = assess_reliability(num_needles)
+
     return {
         "needle_length": needle_length,
         "line_spacing": line_spacing,
@@ -70,6 +131,7 @@ def compute_statistics(
         "pi_true": np.pi,
         "absolute_error": error_abs,
         "relative_error_percent": error_rel,
+        "reliability": reliability,
     }
 
 
@@ -188,22 +250,34 @@ def main():
             needles, args.needle_length, args.line_spacing, pi_estimate, hits
         )
 
-        print("=" * 50)
+        reliability = stats["reliability"]
+
+        print("=" * 55)
         print("布丰投针 π 近似计算结果")
-        print("=" * 50)
-        print(f"投针次数     : {stats['num_needles']:,}")
-        print(f"针长         : {stats['needle_length']}")
-        print(f"平行线间距   : {stats['line_spacing']}")
-        print(f"命中次数     : {stats['total_hits']:,}")
-        print(f"命中概率     : {stats['hit_probability']:.6f}")
-        print(f"理论命中概率 : {stats['theoretical_hit_probability']:.6f}")
-        print(f"π 估计值    : {stats['pi_estimate']:.10f}")
-        print(f"π 真实值    : {stats['pi_true']:.10f}")
-        print(f"绝对误差     : {stats['absolute_error']:.10f}")
-        print(f"相对误差     : {stats['relative_error_percent']:.6f}%")
-        print(f"耗时         : {elapsed:.4f} 秒")
-        print(f"吞吐量       : {needles / elapsed:,.0f} 针/秒")
-        print("=" * 50)
+        print("=" * 55)
+        print(f"投针次数         : {stats['num_needles']:,}")
+        print(f"针长             : {stats['needle_length']}")
+        print(f"平行线间距       : {stats['line_spacing']}")
+        print(f"命中次数         : {stats['total_hits']:,}")
+        print(f"命中概率         : {stats['hit_probability']:.6f}")
+        print(f"理论命中概率     : {stats['theoretical_hit_probability']:.6f}")
+        print(f"π 估计值        : {stats['pi_estimate']:.10f}")
+        print(f"π 真实值        : {stats['pi_true']:.10f}")
+        print(f"绝对误差         : {stats['absolute_error']:.10f}")
+        print(f"相对误差         : {stats['relative_error_percent']:.6f}%")
+        print(f"可靠性等级       : {reliability['tier']}（预期精度 {reliability['tier_accuracy']}）")
+        print(f"预期相对误差     : {reliability['expected_relative_error_percent']:.4f}%")
+        print(f"建议最低投针次数 : {reliability['recommended_min_needles']:,}")
+        print(f"耗时             : {elapsed:.4f} 秒")
+        print(f"吞吐量           : {needles / elapsed:,.0f} 针/秒")
+
+        if reliability["warnings"]:
+            print("-" * 55)
+            print("⚠ 警告：")
+            for w in reliability["warnings"]:
+                print(f"  · {w}")
+
+        print("=" * 55)
 
     else:
         parser.print_help()
